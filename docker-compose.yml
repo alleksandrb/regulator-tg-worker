@@ -1,0 +1,16 @@
+services:
+  worker:
+    build: .
+    networks:
+      - app_network
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MAX_ASYNC_WORKERS: 10
+    deploy:
+      replicas: 5
+
+networks:
+  app_network:
+    external: true
+
