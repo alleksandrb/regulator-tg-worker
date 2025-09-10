@@ -10,7 +10,7 @@ from redis.exceptions import TimeoutError
 import redis.asyncio as aioredis
 from telethon import TelegramClient
 from telethon.tl.functions.messages import GetMessagesViewsRequest
-from telethon.errors import RPCError, FloodWaitError, ConnectionError as TelethonConnectionError
+from telethon.errors import RPCError, FloodWaitError
 
 
 QUEUE_NAME = "view-increment-queue"
@@ -137,7 +137,7 @@ async def process_task(task_data: dict):
                         )
                         break  # если успешно — выходим из retry
                         
-                except (ConnectionError, TelethonConnectionError, RPCError, FloodWaitError, RuntimeError, OSError) as e:
+                except (ConnectionError, RPCError, FloodWaitError, RuntimeError, OSError, BrokenPipeError, ConnectionResetError) as e:
                     error_msg = str(e)
                     if attempt < MAX_RETRIES:
                         wait_time = RETRY_DELAY * attempt
