@@ -121,7 +121,6 @@ async def process_task(task_data: dict):
                 try:
                     # Переподключаемся на каждой попытке для надежности
                     async with client:
-                        await client.connect()
                         entity = await client.get_entity(channel_username)
                         
                         result = await client(
