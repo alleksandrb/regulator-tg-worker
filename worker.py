@@ -10,7 +10,7 @@ from redis.exceptions import TimeoutError
 import redis.asyncio as aioredis
 from telethon import TelegramClient
 from telethon.tl.functions.messages import GetMessagesViewsRequest
-from telethon.errors import RPCError, FloodWaitError
+from telethon.errors import RPCError, FloodWaitError, ConnectionError as TelethonConnectionError
 
 
 QUEUE_NAME = "view-increment-queue"
@@ -35,10 +35,8 @@ class JsonFormatter(logging.Formatter):
             "message": record.getMessage(),
             "logger": record.name,
             "time": self.formatTime(record, "%Y-%m-%d %H:%M:%S"),
+            "extra": getattr(record, "extra", {}),
         }
-        # Only add extra if it exists
-        if hasattr(record, 'extra') and record.extra:
-            log_record["extra"] = record.extra
         if record.exc_info:
             log_record["exception"] = self.formatException(record.exc_info)
         return json.dumps(log_record, ensure_ascii=False)
@@ -104,23 +102,28 @@ async def process_task(task_data: dict):
             account_json["app_id"],
             account_json["app_hash"],
             proxy=proxy_config,
+            connection_retries=2,
+            retry_delay=1,
+            timeout=30,
         )
 
         # Use semaphore to limit concurrent connections and prevent race conditions
         async with telegram_semaphore:
             # Small delay to reduce connection race conditions
             await asyncio.sleep(0.1)
-            async with client:
-                telegram_post_url = task_data["telegram_post_url"]
+            
+            telegram_post_url = task_data["telegram_post_url"]
+            # Разбор ссылки
+            parts = urlparse(telegram_post_url).path.strip("/").split("/")
+            channel_username, message_id = parts[0], int(parts[1])
 
-                # Разбор ссылки
-                parts = urlparse(telegram_post_url).path.strip("/").split("/")
-                channel_username, message_id = parts[0], int(parts[1])
-
-                entity = await client.get_entity(channel_username)
-
-                for attempt in range(1, MAX_RETRIES + 1):
-                    try:
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    # Переподключаемся на каждой попытке для надежности
+                    async with client:
+                        await client.connect()
+                        entity = await client.get_entity(channel_username)
+                        
                         result = await client(
                             GetMessagesViewsRequest(
                                 peer=entity,
@@ -133,13 +136,22 @@ async def process_task(task_data: dict):
                             extra={"url": telegram_post_url, "result": str(result)},
                         )
                         break  # если успешно — выходим из retry
-                    except (ConnectionError, RPCError, FloodWaitError, RuntimeError) as e:
-                        if attempt < MAX_RETRIES:
-                            wait_time = RETRY_DELAY * attempt
-                            logger.warning(f"[Task] Сетевая ошибка {e}, повтор через {wait_time}s (попытка {attempt}/{MAX_RETRIES})", extra={"user_id": user_id})
-                            await asyncio.sleep(wait_time)
-                        else:
-                            logger.error(f"[Task] Не удалось выполнить после {MAX_RETRIES} попыток: {e}", extra={"user_id": user_id}, exc_info=True)
+                        
+                except (ConnectionError, TelethonConnectionError, RPCError, FloodWaitError, RuntimeError, OSError) as e:
+                    error_msg = str(e)
+                    if attempt < MAX_RETRIES:
+                        wait_time = RETRY_DELAY * attempt
+                        logger.warning(
+                            f"[Task] Сетевая ошибка: {error_msg}, повтор через {wait_time}s (попытка {attempt}/{MAX_RETRIES})", 
+                            extra={"user_id": user_id, "error_type": type(e).__name__, "url": telegram_post_url}
+                        )
+                        await asyncio.sleep(wait_time)
+                    else:
+                        logger.error(
+                            f"[Task] Не удалось выполнить после {MAX_RETRIES} попыток: {error_msg}", 
+                            extra={"user_id": user_id, "error_type": type(e).__name__, "url": telegram_post_url}, 
+                            exc_info=True
+                        )
 
     except Exception as e:
         logger.error(f"[Task] Ошибка при обработке задачи: {e}", extra={"user_id": user_id}, exc_info=True)
