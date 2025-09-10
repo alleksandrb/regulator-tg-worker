@@ -16,7 +16,8 @@ QUEUE_NAME = "view-increment-queue"
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 MAX_WORKERS = int(os.getenv("MAX_ASYNC_WORKERS", 10))
-
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", 3))
+RETRY_DELAY = int(os.getenv("RETRY_DELAY", 3))
 
 # ==============================
 # JSON логирование
