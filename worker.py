@@ -35,8 +35,10 @@ class JsonFormatter(logging.Formatter):
             "message": record.getMessage(),
             "logger": record.name,
             "time": self.formatTime(record, "%Y-%m-%d %H:%M:%S"),
-            "extra": record.extra,
         }
+        # Only add extra if it exists
+        if hasattr(record, 'extra') and record.extra:
+            log_record["extra"] = record.extra
         if record.exc_info:
             log_record["exception"] = self.formatException(record.exc_info)
         return json.dumps(log_record, ensure_ascii=False)
