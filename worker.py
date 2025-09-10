@@ -63,9 +63,12 @@ async def init_redis():
 async def process_task(task_data: dict):
     """
     Обработка одной задачи: подключение к Telegram и инкремент просмотра поста.
+    Включает автоматический retry при сетевых ошибках.
     """
+    temp_file = None
     try:
         account_json = task_data["account_json_data"]
+        user_id = account_json["user_id"]
 
         # Прокси
         proxy_config = None
@@ -81,40 +84,58 @@ async def process_task(task_data: dict):
 
         # Сессия
         session_bytes = base64.b64decode(task_data["session"])
-        with tempfile.NamedTemporaryFile(suffix=".session") as temp_file:
-            temp_file.write(session_bytes)
-            temp_file.flush()
+        with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as temp_file_obj:
+            temp_file_obj.write(session_bytes)
+            temp_file_obj.flush()
+            temp_file = temp_file_obj.name
 
-            client = TelegramClient(
-                temp_file.name,
-                account_json["app_id"],
-                account_json["app_hash"],
-                proxy=proxy_config,
-            )
+        client = TelegramClient(
+            temp_file,
+            account_json["app_id"],
+            account_json["app_hash"],
+            proxy=proxy_config,
+        )
 
-            async with client:
-                telegram_post_url = task_data["telegram_post_url"]
+        async with client:
+            telegram_post_url = task_data["telegram_post_url"]
 
-                # Разбор ссылки
-                parts = urlparse(telegram_post_url).path.strip("/").split("/")
-                channel_username, message_id = parts[0], int(parts[1])
+            # Разбор ссылки
+            parts = urlparse(telegram_post_url).path.strip("/").split("/")
+            channel_username, message_id = parts[0], int(parts[1])
 
-                entity = await client.get_entity(channel_username)
-                result = await client(
-                    GetMessagesViewsRequest(
-                        peer=entity,
-                        id=[message_id],
-                        increment=True,
+            entity = await client.get_entity(channel_username)
+
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    result = await client(
+                        GetMessagesViewsRequest(
+                            peer=entity,
+                            id=[message_id],
+                            increment=True,
+                        )
                     )
-                )
-                logger.info(
-                    f"[Task] Просмотр добавлен",
-                    extra={"url": telegram_post_url, "result": str(result)},
-                )
+                    logger.info(
+                        f"[Task] Просмотр добавлен",
+                        extra={"url": telegram_post_url, "result": str(result)},
+                    )
+                    break  # если успешно — выходим из retry
+                except (ConnectionError, RPCError, FloodWaitError) as e:
+                    if attempt < MAX_RETRIES:
+                        wait_time = RETRY_DELAY * attempt
+                        logger.warning(f"[Task] Сетевая ошибка {e}, повтор через {wait_time}s (попытка {attempt}/{MAX_RETRIES})", extra={"user_id": user_id})
+                        await asyncio.sleep(wait_time)
+                    else:
+                        logger.error(f"[Task] Не удалось выполнить после {MAX_RETRIES} попыток: {e}", extra={"user_id": user_id}, exc_info=True)
 
     except Exception as e:
-        logger.error(f"[Task] Ошибка: {e}", exc_info=True)
+        logger.error(f"[Task] Ошибка при обработке задачи: {e}", extra={"user_id": user_id}, exc_info=True)
 
+    finally:
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except Exception:
+                pass
 
 # ==============================
 # Worker loop
@@ -147,7 +168,7 @@ async def worker(name: int, redis):
 # ==============================
 async def main():
     redis = await init_redis()
-    workers = [worker(i, redis) for i in range(MAX_WORKERS)]  # 3 асинхронных воркера
+    workers = [worker(i, redis) for i in range(MAX_WORKERS)]
     await asyncio.gather(*workers)
 
 
