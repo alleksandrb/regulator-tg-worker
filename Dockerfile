@@ -14,4 +14,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Запуск воркера
-CMD ["python", "worker.py"]
+CMD ["python", "worker_manager.py"]

@@ -4,11 +4,20 @@ services:
     networks:
       - app_network
     environment:
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      MAX_ASYNC_WORKERS: 10
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      MAX_PARALLEL_PROCESSES: ${MAX_PARALLEL_PROCESSES}
+      QUEUE_NAME: ${QUEUE_NAME}
     deploy:
-      replicas: 5
+      replicas: ${CONTAINER_REPLICAS}
+    volumes:
+      - ./:/app
+      - ${ACCOUNT_SESSION_PATH}:/app/storage/sessions:rw
+      - ${ACCOUNT_JSON_PATH}:/app/storage/json:rw
+    user: "1000:1001"
+
+    mem_limit: ${CONTAINER_MEM_LIMIT}
+    cpus: ${CONTAINER_CPUS}
 
 networks:
   app_network:
